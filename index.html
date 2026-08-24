@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Click &amp; Clean — Lacak Pesanan</title>
+<meta name="description" content="Click &amp; Clean — lacak status cucianmu real-time, ajukan antar-jemput, dan cek poin." />
+<link rel="icon" type="image/png" href="assets/favicon.png" />
+<link rel="apple-touch-icon" href="assets/icon-192.png" />
+<meta name="theme-color" content="#0A005D" />
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<div id="app"></div>
+
+<!-- Firebase (opsional — lihat firebase-config.js & README.md) -->
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+<script src="firebase-config.js"></script>
+<script src="common.js"></script>
+<script>
+/* ============ STATE KHUSUS HALAMAN KONSUMEN ============ */
+const page = {
+  tab: 'lacak',
+  trackResult: undefined, // undefined = belum cari, null = tidak ditemukan, order = ditemukan
+  banner: null,
+  lastCreated: null,
+  poinPhone: null,
+};
+
+const urlCode = new URLSearchParams(location.search).get('code');
+if(urlCode) page.tab = 'lacak';
+
+function render(){
+  const app = document.getElementById('app');
+  app.innerHTML = `
+    ${renderHeader()}
+    ${state.demoMode ? `<div class="banner info">Mode demo aktif — data belum tersambung ke database nyata. Lihat README.md untuk menghubungkan Firebase agar data pesanan tersimpan permanen & bisa dilihat pengusaha secara real-time.</div>` : ''}
+    <div class="subnav">
+      <button class="${page.tab==='lacak'?'active':''}" data-tab="lacak">Lacak Pesanan</button>
+      <button class="${page.tab==='jemput'?'active':''}" data-tab="jemput">Antar-Jemput</button>
+      <button class="${page.tab==='poin'?'active':''}" data-tab="poin">Poin &amp; Paket Hemat</button>
+    </div>
+    ${page.tab==='lacak' ? renderTrack() : page.tab==='jemput' ? renderPickup() : renderPoints()}
+    <footer><img src="assets/logo-icon.png" alt="Click &amp; Clean" class="footer-logo" />Click &amp; Clean — pantau status cucianmu kapan saja.</footer>
+  `;
+  bind();
+  if(urlCode && page.trackResult===undefined){
+    doTrack(urlCode);
+  }
+}
+
+function renderHeader(){
+  return `
+  <div class="brandbar">
+    <div class="brandleft">
+      <div class="brandmark"><img src="assets/logo-icon.png" alt="Logo Click &amp; Clean" /></div>
+      <div class="brandtext"><h1>Click &amp; Clean</h1><p>Lacak status cucianmu real-time</p></div>
+    </div>
+    <span class="badge-role">Panel Konsumen</span>
+  </div>`;
+}
+
+function doTrack(code){
+  const found = state.orders.find(o=>o.code.toUpperCase()===code.trim().toUpperCase());
+  page.trackResult = found || null;
+  render();
+}
+
+function renderTrack(){
+  let result = '';
+  if(page.trackResult === null){
+    result = `<div class="card"><div class="empty">Kode pesanan tidak ditemukan. Periksa kembali kode pada nota atau pesan WhatsApp Anda.</div></div>`;
+  } else if(page.trackResult){
+    result = renderFullTicket(page.trackResult);
+  }
+  return `
+  <div class="card">
+    <h2>Lacak Status Pesanan</h2>
+    <p class="hint">Masukkan kode pesanan dari nota digital atau pesan WhatsApp Anda (cth: CC-AB12CD).</p>
+    <form id="form-lacak" style="display:flex; gap:8px; flex-wrap:wrap;">
+      <input type="text" name="code" class="mono" value="${urlCode||''}" placeholder="CC-XXXXXX" style="flex:1; min-width:180px; padding:9px 11px; border:1px solid var(--line); border-radius:7px;" required/>
+      <button class="btn" type="submit">Lacak</button>
+    </form>
+  </div>
+  ${result}`;
+}
+
+function renderFullTicket(o){
+  const idx = STATUSES.indexOf(o.status);
+  return `
+  <div class="ticket">
+    <div class="ticket-head">
+      <span class="code mono">${o.code}</span>
+      <span class="status-pill ${o.status==='Diserahkan/Diambil'?'done':''}">${o.status}</span>
+    </div>
+    <div class="ticket-body">
+      <div class="timeline">
+        ${STATUSES.map((s,i)=>`<div class="tl-step ${i<=idx?'active':''}"><div class="bar"></div><div class="dot"></div><span>${s}</span></div>`).join('')}
+      </div>
+      <div style="margin-top:16px;">
+        <div class="rowline"><span class="lbl">Pelanggan</span><span class="val">${o.name}</span></div>
+        <div class="rowline"><span class="lbl">Layanan</span><span class="val">${serviceOf(o.serviceId).name} · ${o.weight} kg</span></div>
+        ${o.items?`<div class="rowline"><span class="lbl">Item</span><span class="val">${o.items}</span></div>`:''}
+        ${o.pickup?`<div class="rowline"><span class="lbl">Antar-Jemput</span><span class="val">${o.address||'-'}</span></div>`:''}
+        <div class="rowline"><span class="lbl">Pembayaran</span><span class="val">${o.isPaid ? 'Lunas · '+paymentLabel(o.paymentMethod) : 'Belum Lunas'}</span></div>
+        <div class="rowline"><span class="lbl">Poin Diperoleh</span><span class="val">${o.isPaid ? o.pointsEarned : 0} poin</span></div>
+        <div class="total-line"><span>Total Tagihan</span><span>${rupiah(o.totalPrice)}</span></div>
+      </div>
+      <div class="barcode"></div>
+      ${!o.isPaid ? `<div class="lock-note">🔒 Tagihan belum lunas — status &ldquo;Diserahkan/Diambil&rdquo; akan otomatis terkunci sistem hingga pembayaran dikonfirmasi kasir.</div>` : ''}
+    </div>
+  </div>`;
+}
+
+function renderPickup(){
+  const banner = page.banner ? `<div class="banner ${page.banner.type}">${page.banner.text}</div>` : '';
+  const created = page.lastCreated && page.banner?.type==='ok' ? renderMiniReceipt(state.orders.find(o=>o.code===page.lastCreated)) : '';
+  return `
+  <div class="card">
+    <h2>Ajukan Antar-Jemput</h2>
+    <p class="hint">Cocok untuk lokasi yang kurang nyaman dijangkau sendiri. Petugas akan menjemput cucian Anda.</p>
+    ${banner}
+    <form id="form-jemput">
+      <div class="grid2">
+        <div class="field"><label>Nama</label><input type="text" name="name" required/></div>
+        <div class="field"><label>No. HP (aktif WhatsApp)</label><input type="tel" name="phone" required placeholder="08xxxxxxxxxx"/></div>
+      </div>
+      <div class="field"><label>Alamat Penjemputan</label><input type="text" name="address" required placeholder="Alamat lengkap"/></div>
+      <div class="grid2">
+        <div class="field"><label>Perkiraan Berat (kg)</label><input type="number" name="weight" min="0.5" step="0.5" required/></div>
+        <div class="field"><label>Jenis Layanan</label><select name="serviceId">${SERVICES.map(s=>`<option value="${s.id}">${s.name} — ${s.desc}</option>`).join('')}</select></div>
+      </div>
+      <button class="btn" type="submit">Kirim Permintaan Jemput</button>
+    </form>
+  </div>
+  ${created}`;
+}
+
+function renderMiniReceipt(o){
+  if(!o) return '';
+  return `
+  <div class="ticket">
+    <div class="ticket-head"><span class="code mono">${o.code}</span><span class="status-pill">${o.status}</span></div>
+    <div class="ticket-body">
+      <div class="rowline"><span class="lbl">Layanan</span><span class="val">${serviceOf(o.serviceId).name} · ${o.weight} kg</span></div>
+      <div class="total-line"><span>Estimasi Total</span><span>${rupiah(o.totalPrice)}</span></div>
+      <div class="lock-note" style="background:var(--brand-tint); color:var(--brand-deep);">Simpan kode <strong>${o.code}</strong> ini untuk melacak status jemputan Anda di tab &ldquo;Lacak Pesanan&rdquo;.</div>
+    </div>
+  </div>`;
+}
+
+function renderPoints(){
+  const phone = page.poinPhone;
+  let pointsCard = '';
+  if(phone){
+    const pts = pointsForPhone(phone);
+    pointsCard = `
+    <div class="card">
+      <p class="hint" style="margin-bottom:4px;">Total poin untuk ${phone}</p>
+      <div class="pointsbig">${pts} <span style="font-size:15px; color:var(--ink-soft); font-weight:500;">poin</span></div>
+    </div>
+    <div class="card">
+      <h2>Paket Hemat</h2>
+      <p class="hint">Tukarkan poin Anda dengan paket berikut.</p>
+      <div class="pkglist">
+        ${PACKAGES.map(p=>{
+          const unlocked = pts >= p.threshold;
+          return `<div class="pkg ${unlocked?'unlocked':''}">
+            <div><div class="ptitle">${p.title}</div><div class="pdesc">${p.desc}</div><div class="pthresh">Butuh ${p.threshold} poin</div></div>
+            <button class="btn ${unlocked?'':'ghost'} small" ${unlocked?'':'disabled'} data-redeem-phone="${phone}" data-redeem-threshold="${p.threshold}">${unlocked?'Tukar Sekarang':'Belum Cukup'}</button>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>`;
+  }
+  return `
+  <div class="card">
+    <h2>Poin &amp; Rewards</h2>
+    <p class="hint">1 poin untuk setiap Rp1.000 transaksi yang sudah lunas. Kumpulkan poin untuk menukar paket hemat.</p>
+    <form id="form-poin" style="display:flex; gap:8px; flex-wrap:wrap;">
+      <input type="tel" name="phone" placeholder="Masukkan No. HP terdaftar" style="flex:1; min-width:180px; padding:9px 11px; border:1px solid var(--line); border-radius:7px;" required/>
+      <button class="btn" type="submit">Cek Poin</button>
+    </form>
+  </div>
+  ${pointsCard}`;
+}
+
+function bind(){
+  const app = document.getElementById('app');
+  app.querySelectorAll('[data-tab]').forEach(b=>b.addEventListener('click', ()=>{
+    page.tab = b.dataset.tab; page.banner=null; page.lastCreated=null; render();
+  }));
+
+  const formLacak = document.getElementById('form-lacak');
+  if(formLacak) formLacak.addEventListener('submit', e=>{
+    e.preventDefault();
+    doTrack(new FormData(formLacak).get('code'));
+  });
+
+  const formJemput = document.getElementById('form-jemput');
+  if(formJemput) formJemput.addEventListener('submit', async e=>{
+    e.preventDefault();
+    const fd = new FormData(formJemput);
+    const res = await createOrder({
+      name: fd.get('name'), phone: fd.get('phone'), weight: fd.get('weight'),
+      serviceId: fd.get('serviceId'), items:'', pickup:true, address: fd.get('address'), isPaid:false,
+    });
+    page.banner = res.ok
+      ? { type:'ok', text:`Permintaan terkirim! Simpan kode ${res.order.code} untuk melacak status jemputan Anda.` }
+      : { type:'err', text: res.error };
+    page.lastCreated = res.ok ? res.order.code : null;
+    render();
+  });
+
+  const formPoin = document.getElementById('form-poin');
+  if(formPoin) formPoin.addEventListener('submit', e=>{
+    e.preventDefault();
+    page.poinPhone = new FormData(formPoin).get('phone').trim();
+    render();
+  });
+
+  app.querySelectorAll('[data-redeem-phone]').forEach(b=>b.addEventListener('click', ()=>{
+    redeemPackage(b.dataset.redeemPhone, Number(b.dataset.redeemThreshold));
+  }));
+}
+
+onDataChange(render);
+render();
+initData();
+</script>
+</body>
+</html>
