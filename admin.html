@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Click &amp; Clean — Panel Admin</title>
+<link rel="icon" type="image/png" href="assets/favicon.png" />
+<link rel="apple-touch-icon" href="assets/icon-192.png" />
+<meta name="theme-color" content="#0A005D" />
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<div id="app"></div>
+
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+<script src="firebase-config.js"></script>
+<script src="common.js"></script>
+<script>
+/* ============ STATE KHUSUS HALAMAN ADMIN ============ */
+const page = {
+  authed: false,
+  pinError: false,
+  tab: 'input',
+  banner: null,
+  lastCreated: null,
+  historyFilter: 'all',
+  historySearch: '',
+  recapPeriod: 'today',
+  openPaybox: null, // id order yang sedang menampilkan form konfirmasi pembayaran
+};
+
+function render(){
+  const app = document.getElementById('app');
+  if(!page.authed){
+    app.innerHTML = renderPinGate();
+    bindPinGate();
+    return;
+  }
+  app.innerHTML = `
+    ${renderHeader()}
+    ${state.demoMode ? `<div class="banner info">Mode demo aktif — data belum tersambung ke database nyata dan hanya tersimpan di sesi ini. Lihat README.md untuk menghubungkan Firebase agar bisa dipakai sungguhan &amp; data tersinkron dengan panel konsumen.</div>` : ''}
+    <div class="subnav">
+      <button class="${page.tab==='input'?'active':''}" data-tab="input">Input Pesanan</button>
+      <button class="${page.tab==='list'?'active':''}" data-tab="list">Daftar Pesanan (${state.orders.filter(o=>o.status!=='Diserahkan/Diambil').length})</button>
+      <button class="${page.tab==='history'?'active':''}" data-tab="history">Riwayat Transaksi</button>
+      <button class="${page.tab==='recap'?'active':''}" data-tab="recap">Rekap Penjualan</button>
+      <button class="${page.tab==='stock'?'active':''}" data-tab="stock">Stok Otomatis</button>
+    </div>
+    ${renderTab()}
+    <footer><img src="assets/logo-icon.png" alt="Click &amp; Clean" class="footer-logo" />Click &amp; Clean — Panel Admin. Jangan bagikan tautan halaman ini ke pelanggan.</footer>
+  `;
+  bind();
+}
+
+function renderPinGate(){
+  return `
+  <div id="app-inner" class="pingate">
+    <img src="assets/logo-full.png" alt="Click &amp; Clean" class="logo-lockup" />
+    <h1 style="font-size:19px; margin-bottom:6px;">Masuk Panel Admin</h1>
+    <p class="hint" style="color:var(--ink-soft); font-size:13px; margin-bottom:18px;">Khusus pengusaha/kasir Click &amp; Clean.</p>
+    <div class="card">
+      ${page.pinError ? `<div class="banner err">PIN salah, coba lagi.</div>` : ''}
+      <form id="form-pin">
+        <div class="field"><label>PIN Admin</label><input type="password" name="pin" inputmode="numeric" autofocus required/></div>
+        <button class="btn" type="submit" style="width:100%; justify-content:center;">Masuk</button>
+      </form>
+    </div>
+  </div>`;
+}
+function bindPinGate(){
+  const f = document.getElementById('form-pin');
+  f.addEventListener('submit', e=>{
+    e.preventDefault();
+    const pin = new FormData(f).get('pin');
+    if(pin === ADMIN_PIN){ page.authed = true; page.pinError = false; }
+    else { page.pinError = true; }
+    render();
+  });
+}
+
+function renderHeader(){
+  return `
+  <div class="brandbar">
+    <div class="brandleft">
+      <div class="brandmark"><img src="assets/logo-icon.png" alt="Logo Click &amp; Clean" /></div>
+      <div class="brandtext"><h1>Click &amp; Clean</h1><p>Panel operasional untuk pengusaha &amp; kasir</p></div>
+    </div>
+    <span class="badge-role">Panel Admin</span>
+  </div>`;
+}
+
+function renderTab(){
+  if(page.tab==='input') return renderInput();
+  if(page.tab==='list') return renderList();
+  if(page.tab==='history') return renderHistory();
+  if(page.tab==='recap') return renderRecap();
+  return renderStock();
+}
+
+/* ---------- INPUT PESANAN ---------- */
+function renderInput(){
+  const banner = page.banner?.scope==='input' ? `<div class="banner ${page.banner.type}">${page.banner.text}</div>` : '';
+  const created = page.lastCreated && page.banner?.scope==='input' && page.banner.type==='ok'
+    ? renderMiniReceipt(state.orders.find(o=>o.code===page.lastCreated)) : '';
+  return `
+  <div class="card">
+    <h2>Input Pesanan Baru</h2>
+    <p class="hint">Catat berat (kg), jenis layanan, dan item pakaian. Harga, poin, dan stok dihitung otomatis.</p>
+    ${banner}
+    <form id="form-input">
+      <div class="grid2">
+        <div class="field"><label>Nama Pelanggan</label><input type="text" name="name" required placeholder="cth: Budi Santoso"/></div>
+        <div class="field"><label>No. HP (untuk update WhatsApp)</label><input type="tel" name="phone" required placeholder="08xxxxxxxxxx"/></div>
+      </div>
+      <div class="grid2">
+        <div class="field"><label>Berat (kg)</label><input type="number" name="weight" min="0.5" step="0.5" required placeholder="cth: 3"/></div>
+        <div class="field"><label>Jenis Layanan</label>
+          <select name="serviceId">${SERVICES.map(s=>`<option value="${s.id}">${s.name} — ${s.desc} (${rupiah(s.pricePerKg)}/kg)</option>`).join('')}</select>
+        </div>
+      </div>
+      <div class="field"><label>Item Pakaian (catatan)</label><textarea name="items" placeholder="cth: 3 kaos, 2 celana, 1 jaket"></textarea></div>
+      <label class="checkrow"><input type="checkbox" name="pickup" id="chk-pickup"/> Gunakan layanan antar-jemput (+${rupiah(PICKUP_FEE)})</label>
+      <div class="field" id="wrap-address" style="display:none;"><label>Alamat Penjemputan</label><input type="text" name="address" placeholder="Alamat lengkap"/></div>
+      <label class="checkrow"><input type="checkbox" name="isPaid" id="chk-paid"/> Pelanggan langsung membayar saat ini</label>
+      <div class="field" id="wrap-method" style="display:none;"><label>Metode Pembayaran</label>
+        <select name="paymentMethod">${PAYMENT_METHODS.map(p=>`<option value="${p.id}">${p.label}</option>`).join('')}</select>
+      </div>
+      <button class="btn" type="submit">Simpan Pesanan &amp; Buat Nota</button>
+    </form>
+  </div>
+  ${created}`;
+}
+
+function renderMiniReceipt(o){
+  if(!o) return '';
+  return `
+  <div class="ticket">
+    <div class="ticket-head"><span class="code mono">${o.code}</span><span class="status-pill">${o.status}</span></div>
+    <div class="ticket-body">
+      <div class="rowline"><span class="lbl">Pelanggan</span><span class="val">${o.name}</span></div>
+      <div class="rowline"><span class="lbl">Layanan</span><span class="val">${serviceOf(o.serviceId).name} · ${o.weight} kg</span></div>
+      <div class="total-line"><span>Total</span><span>${rupiah(o.totalPrice)}</span></div>
+      <div class="barcode"></div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:10px;">
+        <a class="btn wa small" href="${waLink(o, o.status)}" target="_blank" rel="noopener">Kirim Nota via WhatsApp</a>
+      </div>
+    </div>
+  </div>`;
+}
+
+/* ---------- DAFTAR PESANAN ---------- */
+function renderList(){
+  const active = state.orders.filter(o=>o.status!=='Diserahkan/Diambil');
+  if(active.length===0) return `<div class="card"><div class="empty">Tidak ada pesanan aktif. Semua sudah diserahkan/diambil, atau belum ada pesanan masuk.</div></div>`;
+  return `<div class="card">
+    <h2>Daftar Pesanan Aktif</h2>
+    <p class="hint">Konfirmasi pembayaran dan ubah status di sini. Status &ldquo;Diserahkan/Diambil&rdquo; otomatis terkunci selama tagihan belum lunas.</p>
+    ${active.map(renderOrderRow).join('')}
+  </div>`;
+}
+
+function renderOrderRow(o){
+  const locked = !o.isPaid;
+  const payboxOpen = page.openPaybox === o.id;
+  return `
+  <div class="order-row">
+    <div class="toprow">
+      <div>
+        <div class="name">${o.name} <span class="code mono">· ${o.code}</span></div>
+        <div class="meta">${serviceOf(o.serviceId).name} · ${o.weight} kg · ${rupiah(o.totalPrice)} ${o.pickup?'· 🚚 Antar-Jemput':''}</div>
+        <div class="meta">${fmtDate(o.createdAt)}</div>
+      </div>
+      <div class="order-actions">
+        <span class="paidchip ${o.isPaid?'yes':'no'}">${o.isPaid ? 'Lunas · '+paymentLabel(o.paymentMethod) : 'Belum Lunas'}</span>
+        ${o.isPaid
+          ? `<button class="btn ghost small" data-cancel-pay="${o.id}">Batalkan Lunas</button>`
+          : `<button class="btn small" data-open-pay="${o.id}">Konfirmasi Pembayaran</button>`}
+        <select data-set-status="${o.id}">
+          ${STATUSES.map(s=>`<option value="${s}" ${o.status===s?'selected':''} ${(s==='Diserahkan/Diambil'&&locked)?'disabled':''}>${s}${(s==='Diserahkan/Diambil'&&locked)?' 🔒':''}</option>`).join('')}
+        </select>
+        <a class="btn wa small" href="${waLink(o, o.status)}" target="_blank" rel="noopener">Update via WA</a>
+      </div>
+    </div>
+    ${payboxOpen ? `
+    <div class="paybox">
+      <span style="font-size:12.5px; color:var(--ink-soft);">Metode pembayaran:</span>
+      <select id="pay-method-${o.id}">${PAYMENT_METHODS.map(p=>`<option value="${p.id}">${p.label}</option>`).join('')}</select>
+      <button class="btn small" data-confirm-pay="${o.id}">Konfirmasi Lunas</button>
+      <button class="btn ghost small" data-close-pay="1">Batal</button>
+    </div>` : ''}
+  </div>`;
+}
+
+/* ---------- RIWAYAT TRANSAKSI ---------- */
+function renderHistory(){
+  let list = state.orders.filter(o=>o.isPaid);
+  if(page.historyFilter !== 'all') list = list.filter(o=>o.paymentMethod===page.historyFilter);
+  if(page.historySearch.trim()){
+    const q = page.historySearch.trim().toLowerCase();
+    list = list.filter(o=>o.name.toLowerCase().includes(q) || o.code.toLowerCase().includes(q));
+  }
+  list = [...list].sort((a,b)=> new Date(b.paidAt||b.createdAt) - new Date(a.paidAt||a.createdAt));
+
+  return `<div class="card">
+    <h2>Riwayat Transaksi</h2>
+    <p class="hint">Semua transaksi yang sudah dikonfirmasi lunas.</p>
+    <div class="filterbar">
+      <input type="text" id="history-search" placeholder="Cari nama / kode..." value="${page.historySearch}"/>
+      <select id="history-filter">
+        <option value="all" ${page.historyFilter==='all'?'selected':''}>Semua Metode</option>
+        ${PAYMENT_METHODS.map(p=>`<option value="${p.id}" ${page.historyFilter===p.id?'selected':''}>${p.label}</option>`).join('')}
+      </select>
+    </div>
+    ${list.length===0 ? `<div class="empty">Tidak ada transaksi yang cocok.</div>` : list.map(o=>`
+      <div class="order-row">
+        <div class="toprow">
+          <div>
+            <div class="name">${o.name} <span class="code mono">· ${o.code}</span></div>
+            <div class="meta">${serviceOf(o.serviceId).name} · ${o.weight} kg · ${rupiah(o.totalPrice)}</div>
+            <div class="meta">Dibayar ${fmtDate(o.paidAt)}</div>
+          </div>
+          <div class="order-actions">
+            <span class="paymentchip">${paymentLabel(o.paymentMethod)}</span>
+            <span class="paidchip yes">${o.status}</span>
+          </div>
+        </div>
+      </div>`).join('')}
+  </div>`;
+}
+
+/* ---------- REKAP PENJUALAN ---------- */
+function renderRecap(){
+  const r = computeRecap(page.recapPeriod);
+  const periodLabel = { today:'Hari Ini', week:'7 Hari Terakhir', month:'Bulan Ini', all:'Semua Waktu' };
+  return `<div class="card">
+    <h2>Rekap Penjualan</h2>
+    <p class="hint">Ringkasan omzet dari transaksi yang sudah lunas.</p>
+    <div class="filterbar">
+      <select id="recap-period">
+        ${Object.keys(periodLabel).map(k=>`<option value="${k}" ${page.recapPeriod===k?'selected':''}>${periodLabel[k]}</option>`).join('')}
+      </select>
+    </div>
+    <div class="statgrid">
+      <div class="statcard"><div class="lbl">Total Omzet</div><div class="val">${rupiah(r.omzet)}</div></div>
+      <div class="statcard"><div class="lbl">Jumlah Transaksi</div><div class="val">${r.jumlah}</div></div>
+      <div class="statcard"><div class="lbl">Rata-rata / Transaksi</div><div class="val">${rupiah(r.rata)}</div></div>
+    </div>
+  </div>
+  <div class="card">
+    <h2>Berdasarkan Jenis Layanan</h2>
+    ${r.byService.map(s=>`
+      <div class="breakrow">
+        <div class="brtop"><span>${s.name}</span><span class="n">${s.count} pesanan · ${rupiah(s.revenue)}</span></div>
+        <div class="barwrap"><div class="barfill" style="width:${Math.round(s.revenue/r.maxServiceRevenue*100)}%"></div></div>
+      </div>`).join('')}
+  </div>
+  <div class="card">
+    <h2>Berdasarkan Metode Pembayaran</h2>
+    ${r.byPayment.map(p=>`
+      <div class="breakrow">
+        <div class="brtop"><span>${p.name}</span><span class="n">${p.count} transaksi · ${rupiah(p.revenue)}</span></div>
+        <div class="barwrap"><div class="barfill" style="width:${Math.round(p.revenue/r.maxPaymentRevenue*100)}%; background:linear-gradient(90deg,var(--cyan),var(--blue-bright));"></div></div>
+      </div>`).join('')}
+  </div>`;
+}
+
+/* ---------- STOK ---------- */
+function renderStock(){
+  const items = [
+    { key:'detergen', label:'Deterjen', unit:'ml' },
+    { key:'pewangi', label:'Pewangi', unit:'ml' },
+    { key:'plastik', label:'Plastik Kemasan', unit:'pcs' },
+  ];
+  return `<div class="card">
+    <h2>Pengendalian Stok Otomatis</h2>
+    <p class="hint">Stok berkurang otomatis setiap ada pesanan baru, sesuai berat (kg) laundry yang diinput.</p>
+    <div class="stockgrid">
+      ${items.map(it=>{
+        const val = state.stock[it.key];
+        const full = FULL_STOCK[it.key];
+        const pct = Math.max(0, Math.min(100, Math.round(val/full*100)));
+        const cls = pct<20 ? 'low' : pct<50 ? 'mid' : '';
+        return `<div class="stockcard">
+          <h3>${it.label}</h3>
+          <div class="amt">${val.toLocaleString('id-ID')} <span style="font-size:12px; color:var(--ink-soft);">${it.unit}</span></div>
+          <div class="barwrap"><div class="barfill ${cls}" style="width:${pct}%"></div></div>
+          <button class="btn small ${pct<20?'warn':'ghost'}" data-restock="${it.key}">Isi Ulang Stok</button>
+        </div>`;
+      }).join('')}
+    </div>
+  </div>`;
+}
+
+/* ---------- EVENTS ---------- */
+function bind(){
+  const app = document.getElementById('app');
+
+  app.querySelectorAll('[data-tab]').forEach(b=>b.addEventListener('click', ()=>{
+    page.tab = b.dataset.tab; page.banner=null; page.lastCreated=null; page.openPaybox=null; render();
+  }));
+
+  const chkPickup = document.getElementById('chk-pickup');
+  if(chkPickup) chkPickup.addEventListener('change', ()=>{
+    document.getElementById('wrap-address').style.display = chkPickup.checked ? 'block' : 'none';
+  });
+  const chkPaid = document.getElementById('chk-paid');
+  if(chkPaid) chkPaid.addEventListener('change', ()=>{
+    document.getElementById('wrap-method').style.display = chkPaid.checked ? 'block' : 'none';
+  });
+
+  const formInput = document.getElementById('form-input');
+  if(formInput) formInput.addEventListener('submit', async e=>{
+    e.preventDefault();
+    const fd = new FormData(formInput);
+    const res = await createOrder({
+      name: fd.get('name'), phone: fd.get('phone'), weight: fd.get('weight'),
+      serviceId: fd.get('serviceId'), items: fd.get('items'),
+      pickup: fd.get('pickup')==='on', address: fd.get('address'),
+      isPaid: fd.get('isPaid')==='on', paymentMethod: fd.get('paymentMethod'),
+    });
+    page.banner = res.ok ? { scope:'input', type:'ok', text:`Pesanan berhasil dibuat dengan kode ${res.order.code}.` } : { scope:'input', type:'err', text:res.error };
+    page.lastCreated = res.ok ? res.order.code : null;
+    render();
+  });
+
+  app.querySelectorAll('[data-set-status]').forEach(sel=>sel.addEventListener('change', ()=>{
+    setStatus(sel.dataset.setStatus, sel.value);
+  }));
+  app.querySelectorAll('[data-open-pay]').forEach(b=>b.addEventListener('click', ()=>{
+    page.openPaybox = b.dataset.openPay; render();
+  }));
+  app.querySelectorAll('[data-close-pay]').forEach(b=>b.addEventListener('click', ()=>{
+    page.openPaybox = null; render();
+  }));
+  app.querySelectorAll('[data-confirm-pay]').forEach(b=>b.addEventListener('click', ()=>{
+    const id = b.dataset.confirmPay;
+    const method = document.getElementById('pay-method-'+id).value;
+    page.openPaybox = null;
+    confirmPayment(id, method);
+  }));
+  app.querySelectorAll('[data-cancel-pay]').forEach(b=>b.addEventListener('click', ()=>{
+    cancelPaymentConfirm(b.dataset.cancelPay);
+  }));
+  app.querySelectorAll('[data-restock]').forEach(b=>b.addEventListener('click', ()=>{
+    restock(b.dataset.restock);
+  }));
+
+  const hs = document.getElementById('history-search');
+  if(hs) hs.addEventListener('input', ()=>{
+    page.historySearch = hs.value;
+    render();
+    const el = document.getElementById('history-search');
+    if(el){ el.focus(); const p = el.value.length; el.setSelectionRange(p,p); }
+  });
+  const hf = document.getElementById('history-filter');
+  if(hf) hf.addEventListener('change', ()=>{ page.historyFilter = hf.value; render(); });
+  const rp = document.getElementById('recap-period');
+  if(rp) rp.addEventListener('change', ()=>{ page.recapPeriod = rp.value; render(); });
+}
+
+onDataChange(()=>{ if(page.authed) render(); });
+render();
+initData();
+</script>
+</body>
+</html>
