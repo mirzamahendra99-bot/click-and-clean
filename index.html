@@ -103,7 +103,7 @@ function renderFullTicket(o){
         <div class="rowline"><span class="lbl">Pelanggan</span><span class="val">${o.name}</span></div>
         <div class="rowline"><span class="lbl">Layanan</span><span class="val">${serviceOf(o.serviceId).name} · ${o.awaitingWeight ? 'belum ditimbang' : o.weight+' kg'}</span></div>
         ${o.items?`<div class="rowline"><span class="lbl">Item</span><span class="val">${o.items}</span></div>`:''}
-        ${o.pickup?`<div class="rowline"><span class="lbl">Antar-Jemput</span><span class="val">${o.address||'-'}</span></div>`:''}
+        ${o.pickup?`<div class="rowline"><span class="lbl">${o.deliveryType==='antar'?'Layanan Antar':'Antar-Jemput'}</span><span class="val">${o.address||'-'}</span></div>`:''}
         <div class="rowline"><span class="lbl">Pembayaran</span><span class="val">${o.isPaid ? 'Lunas · '+paymentLabel(o.paymentMethod) : 'Belum Lunas'}</span></div>
         <div class="rowline"><span class="lbl">Poin Diperoleh</span><span class="val">${o.isPaid ? o.pointsEarned : 0} poin</span></div>
         <div class="total-line"><span>Total Tagihan</span><span>${o.awaitingWeight ? 'Menunggu penimbangan' : rupiah(o.totalPrice)}</span></div>

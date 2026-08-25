@@ -121,8 +121,8 @@ function renderInput(){
         </div>
       </div>
       <div class="field"><label>Item Pakaian (catatan)</label><textarea name="items" placeholder="cth: 3 kaos, 2 celana, 1 jaket"></textarea></div>
-      <label class="checkrow"><input type="checkbox" name="pickup" id="chk-pickup"/> Gunakan layanan antar-jemput (+${rupiah(PICKUP_FEE)})</label>
-      <div class="field" id="wrap-address" style="display:none;"><label>Alamat Penjemputan</label><input type="text" name="address" placeholder="Alamat lengkap"/></div>
+      <label class="checkrow"><input type="checkbox" name="pickup" id="chk-pickup"/> Gunakan layanan antar (+${rupiah(PICKUP_FEE)})</label>
+      <div class="field" id="wrap-address" style="display:none;"><label>Alamat Antar</label><input type="text" name="address" placeholder="Alamat lengkap"/></div>
       <label class="checkrow"><input type="checkbox" name="isPaid" id="chk-paid"/> Pelanggan langsung membayar saat ini</label>
       <div class="field" id="wrap-method" style="display:none;"><label>Metode Pembayaran</label>
         <select name="paymentMethod">${PAYMENT_METHODS.map(p=>`<option value="${p.id}">${p.label}</option>`).join('')}</select>
@@ -171,8 +171,8 @@ function renderOrderRow(o){
     <div class="toprow">
       <div>
         <div class="name">${o.name} <span class="code mono">· ${o.code}</span></div>
-        <div class="meta">${serviceOf(o.serviceId).name} · ${pending ? '<strong style="color:var(--accent-ink);">belum ditimbang</strong>' : `${o.weight} kg · ${rupiah(o.totalPrice)}`} ${o.pickup?'· 🚚 Antar-Jemput':''}</div>
-        ${pending && o.address ? `<div class="meta">📍 ${o.address}</div>` : ''}
+        <div class="meta">${serviceOf(o.serviceId).name} · ${pending ? '<strong style="color:var(--accent-ink);">belum ditimbang</strong>' : `${o.weight} kg · ${rupiah(o.totalPrice)}`} ${o.pickup ? (o.deliveryType==='jemput' ? '· 🚚 Jemput' : '· 🚚 Layanan Antar') : ''}</div>
+        ${o.pickup && o.address ? `<div class="meta">📍 ${o.deliveryType==='jemput' ? 'Alamat jemput' : 'Alamat antar'}: ${o.address}</div>` : ''}
         <div class="meta">${fmtDate(o.createdAt)}</div>
       </div>
       <div class="order-actions">

@@ -14,7 +14,7 @@ const USAGE_PER_KG = { detergen:20, pewangi:15 }; // ml per kg
 const USAGE_PLASTIK = 1; // pcs per pesanan
 const FULL_STOCK = { detergen:10000, pewangi:8000, plastik:1000 }; // kapasitas isi ulang
 const STATUSES = ['Diterima','Diproses','Selesai','Diserahkan/Diambil'];
-// Status khusus untuk permintaan antar-jemput yang belum ditimbang petugas.
+// Status khusus untuk permintaan jemput yang belum ditimbang petugas.
 // Berat, harga, dan poin baru dihitung setelah kasir menimbang cucian.
 const STATUS_AWAITING = 'Menunggu Penimbangan';
 const PACKAGES = [
@@ -154,6 +154,9 @@ async function createOrder({ name, phone, weight, serviceId, items, pickup, addr
     code: generateCode(),
     name, phone, weight:w, serviceId, items: items||'',
     pickup: !!pickup, address: address||'',
+    // 'jemput' = permintaan dari panel konsumen (dijemput petugas)
+    // 'antar'  = pesanan input kasir yang minta diantar ke alamat pelanggan
+    deliveryType: pickup ? (pending ? 'jemput' : 'antar') : null,
     awaitingWeight: pending,
     isPaid: paid,
     paymentMethod: paid ? (paymentMethod||'cash') : null,
