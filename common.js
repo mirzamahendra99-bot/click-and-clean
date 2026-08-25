@@ -3,7 +3,7 @@
    ========================================================= */
 
 /* ============ GANTI SESUAI KEBUTUHAN USAHA ============ */
-const ADMIN_PIN = "088123"; // PIN masuk panel admin/kasir — GANTI sebelum deploy ke publik
+const ADMIN_PIN = "2024"; // PIN masuk panel admin/kasir — GANTI sebelum deploy ke publik
 const SERVICES = [
   { id:'reguler', name:'Reguler', desc:'3 hari', pricePerKg:7000 },
   { id:'express', name:'Express', desc:'1 hari', pricePerKg:10000 },
@@ -14,6 +14,9 @@ const USAGE_PER_KG = { detergen:20, pewangi:15 }; // ml per kg
 const USAGE_PLASTIK = 1; // pcs per pesanan
 const FULL_STOCK = { detergen:10000, pewangi:8000, plastik:1000 }; // kapasitas isi ulang
 const STATUSES = ['Diterima','Diproses','Selesai','Diserahkan/Diambil'];
+// Status khusus untuk permintaan antar-jemput yang belum ditimbang petugas.
+// Berat, harga, dan poin baru dihitung setelah kasir menimbang cucian.
+const STATUS_AWAITING = 'Menunggu Penimbangan';
 const PACKAGES = [
   { threshold:50, title:'Diskon Rp10.000', desc:'Potongan langsung untuk cucian berikutnya' },
   { threshold:100, title:'Gratis Cuci 3kg Reguler', desc:'Satu kali cuci gratis hingga 3kg' },
@@ -131,25 +134,33 @@ async function deductStock(usage){
 }
 function pointsFor(total){ return Math.floor(total/1000); }
 
-async function createOrder({ name, phone, weight, serviceId, items, pickup, address, isPaid, paymentMethod }){
-  const w = Number(weight);
+async function createOrder({ name, phone, weight, serviceId, items, pickup, address, isPaid, paymentMethod, awaitingWeight }){
+  const w = Number(weight) || 0;
   const svc = serviceOf(serviceId);
-  const usage = computeUsage(w);
-  if(!stockCanCover(usage)){
-    return { ok:false, error:'Stok bahan (deterjen/pewangi/plastik) tidak mencukupi untuk pesanan ini. Silakan isi ulang stok terlebih dahulu di tab Stok Otomatis.' };
+  const pending = !!awaitingWeight;
+
+  // Pesanan yang belum ditimbang: harga, poin, dan pemakaian stok
+  // sengaja BELUM dihitung karena penimbangan adalah wewenang kasir.
+  let usage = null;
+  if(!pending){
+    usage = computeUsage(w);
+    if(!stockCanCover(usage)){
+      return { ok:false, error:'Stok bahan (deterjen/pewangi/plastik) tidak mencukupi untuk pesanan ini. Silakan isi ulang stok terlebih dahulu di tab Stok Otomatis.' };
+    }
   }
-  const total = Math.round(w * svc.pricePerKg) + (pickup ? PICKUP_FEE : 0);
-  const paid = !!isPaid;
+  const total = pending ? 0 : Math.round(w * svc.pricePerKg) + (pickup ? PICKUP_FEE : 0);
+  const paid = pending ? false : !!isPaid;
   const order = {
     code: generateCode(),
     name, phone, weight:w, serviceId, items: items||'',
     pickup: !!pickup, address: address||'',
+    awaitingWeight: pending,
     isPaid: paid,
     paymentMethod: paid ? (paymentMethod||'cash') : null,
     paidAt: paid ? new Date().toISOString() : null,
-    status: 'Diterima',
+    status: pending ? STATUS_AWAITING : 'Diterima',
     totalPrice: total,
-    pointsEarned: pointsFor(total),
+    pointsEarned: pending ? 0 : pointsFor(total),
     createdAt: new Date().toISOString(),
     createdAtMs: Date.now(),
   };
@@ -160,9 +171,34 @@ async function createOrder({ name, phone, weight, serviceId, items, pickup, addr
     order.id = 'local_' + Date.now() + '_' + Math.random().toString(36).slice(2,6);
     state.orders.unshift(order);
   }
-  await deductStock(usage);
+  if(usage) await deductStock(usage);
   notify();
   return { ok:true, order };
+}
+
+/* Kasir menimbang cucian jemputan -> baru di sini harga, poin, dan stok dihitung. */
+async function applyWeight(id, weight){
+  const o = state.orders.find(o=>o.id===id);
+  if(!o) return { ok:false, error:'Pesanan tidak ditemukan.' };
+  const w = Number(weight);
+  if(!w || w <= 0) return { ok:false, error:'Berat harus lebih dari 0 kg.' };
+
+  const usage = computeUsage(w);
+  if(!stockCanCover(usage)){
+    return { ok:false, error:'Stok bahan tidak mencukupi. Isi ulang stok dulu di tab Stok Otomatis.' };
+  }
+  const svc = serviceOf(o.serviceId);
+  const total = Math.round(w * svc.pricePerKg) + (o.pickup ? PICKUP_FEE : 0);
+  await updateOrder(id, {
+    weight: w,
+    totalPrice: total,
+    pointsEarned: pointsFor(total),
+    awaitingWeight: false,
+    status: 'Diterima',
+    weighedAt: new Date().toISOString(),
+  });
+  await deductStock(usage);
+  return { ok:true, order: state.orders.find(o=>o.id===id) };
 }
 
 async function updateOrder(id, patch){
@@ -175,10 +211,13 @@ async function updateOrder(id, patch){
 async function setStatus(id, status){
   const o = state.orders.find(o=>o.id===id);
   if(!o) return;
+  if(o.awaitingWeight) return; // belum ditimbang -> proses belum boleh berjalan
   if(status === 'Diserahkan/Diambil' && !o.isPaid) return; // system lock: tidak bisa diserahkan sebelum lunas
   await updateOrder(id, { status });
 }
 async function confirmPayment(id, method){
+  const o = state.orders.find(o=>o.id===id);
+  if(o && o.awaitingWeight) return; // tagihan belum ada sebelum ditimbang
   await updateOrder(id, { isPaid:true, paymentMethod: method, paidAt: new Date().toISOString() });
 }
 async function cancelPaymentConfirm(id){

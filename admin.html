@@ -28,6 +28,7 @@ const page = {
   historySearch: '',
   recapPeriod: 'today',
   openPaybox: null, // id order yang sedang menampilkan form konfirmasi pembayaran
+  weighError: null, // pesan error saat kasir menyimpan berat timbangan
 };
 
 function render(){
@@ -139,7 +140,7 @@ function renderMiniReceipt(o){
     <div class="ticket-head"><span class="code mono">${o.code}</span><span class="status-pill">${o.status}</span></div>
     <div class="ticket-body">
       <div class="rowline"><span class="lbl">Pelanggan</span><span class="val">${o.name}</span></div>
-      <div class="rowline"><span class="lbl">Layanan</span><span class="val">${serviceOf(o.serviceId).name} · ${o.weight} kg</span></div>
+      <div class="rowline"><span class="lbl">Layanan</span><span class="val">${serviceOf(o.serviceId).name} · ${o.awaitingWeight ? 'belum ditimbang' : o.weight+' kg'}</span></div>
       <div class="total-line"><span>Total</span><span>${rupiah(o.totalPrice)}</span></div>
       <div class="barcode"></div>
       <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:10px;">
@@ -163,25 +164,36 @@ function renderList(){
 function renderOrderRow(o){
   const locked = !o.isPaid;
   const payboxOpen = page.openPaybox === o.id;
+  const pending = !!o.awaitingWeight;
+  const weighErr = (page.weighError && page.weighError.id === o.id) ? page.weighError.text : '';
   return `
-  <div class="order-row">
+  <div class="order-row"${pending?' style="border-left:3px solid var(--accent);"':''}>
     <div class="toprow">
       <div>
         <div class="name">${o.name} <span class="code mono">· ${o.code}</span></div>
-        <div class="meta">${serviceOf(o.serviceId).name} · ${o.weight} kg · ${rupiah(o.totalPrice)} ${o.pickup?'· 🚚 Antar-Jemput':''}</div>
+        <div class="meta">${serviceOf(o.serviceId).name} · ${pending ? '<strong style="color:var(--accent-ink);">belum ditimbang</strong>' : `${o.weight} kg · ${rupiah(o.totalPrice)}`} ${o.pickup?'· 🚚 Antar-Jemput':''}</div>
+        ${pending && o.address ? `<div class="meta">📍 ${o.address}</div>` : ''}
         <div class="meta">${fmtDate(o.createdAt)}</div>
       </div>
       <div class="order-actions">
+        ${pending ? `<span class="paidchip no">Menunggu Penimbangan</span>` : `
         <span class="paidchip ${o.isPaid?'yes':'no'}">${o.isPaid ? 'Lunas · '+paymentLabel(o.paymentMethod) : 'Belum Lunas'}</span>
         ${o.isPaid
           ? `<button class="btn ghost small" data-cancel-pay="${o.id}">Batalkan Lunas</button>`
           : `<button class="btn small" data-open-pay="${o.id}">Konfirmasi Pembayaran</button>`}
         <select data-set-status="${o.id}">
           ${STATUSES.map(s=>`<option value="${s}" ${o.status===s?'selected':''} ${(s==='Diserahkan/Diambil'&&locked)?'disabled':''}>${s}${(s==='Diserahkan/Diambil'&&locked)?' 🔒':''}</option>`).join('')}
-        </select>
+        </select>`}
         <a class="btn wa small" href="${waLink(o, o.status)}" target="_blank" rel="noopener">Update via WA</a>
       </div>
     </div>
+    ${pending ? `
+    <div class="paybox">
+      <span style="font-size:12.5px; color:var(--ink-soft);">Berat hasil timbang (kg):</span>
+      <input type="number" id="weigh-${o.id}" min="0.5" step="0.5" placeholder="cth: 3.5" style="width:110px; padding:7px 9px; border:1px solid var(--line); border-radius:7px;"/>
+      <button class="btn small" data-apply-weight="${o.id}">Simpan Berat &amp; Hitung Tagihan</button>
+    </div>
+    ${weighErr ? `<div class="banner err" style="margin:10px 0 0;">${weighErr}</div>` : ''}` : ''}
     ${payboxOpen ? `
     <div class="paybox">
       <span style="font-size:12.5px; color:var(--ink-soft);">Metode pembayaran:</span>
@@ -308,6 +320,14 @@ function bind(){
   if(chkPaid) chkPaid.addEventListener('change', ()=>{
     document.getElementById('wrap-method').style.display = chkPaid.checked ? 'block' : 'none';
   });
+
+  app.querySelectorAll('[data-apply-weight]').forEach(b=>b.addEventListener('click', async ()=>{
+    const id = b.dataset.applyWeight;
+    const val = document.getElementById('weigh-'+id).value;
+    const res = await applyWeight(id, val);
+    page.weighError = res.ok ? null : { id, text: res.error };
+    render();
+  }));
 
   const formInput = document.getElementById('form-input');
   if(formInput) formInput.addEventListener('submit', async e=>{

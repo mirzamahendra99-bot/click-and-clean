@@ -87,7 +87,7 @@ function renderTrack(){
 }
 
 function renderFullTicket(o){
-  const idx = STATUSES.indexOf(o.status);
+  const idx = o.awaitingWeight ? -1 : STATUSES.indexOf(o.status);
   return `
   <div class="ticket">
     <div class="ticket-head">
@@ -95,20 +95,21 @@ function renderFullTicket(o){
       <span class="status-pill ${o.status==='Diserahkan/Diambil'?'done':''}">${o.status}</span>
     </div>
     <div class="ticket-body">
+      ${o.awaitingWeight ? `<div class="banner info" style="margin:0 0 14px;">⚖️ Cucian Anda belum ditimbang petugas. Total tagihan dan poin akan muncul di sini setelah penimbangan selesai.</div>` : ''}
       <div class="timeline">
         ${STATUSES.map((s,i)=>`<div class="tl-step ${i<=idx?'active':''}"><div class="bar"></div><div class="dot"></div><span>${s}</span></div>`).join('')}
       </div>
       <div style="margin-top:16px;">
         <div class="rowline"><span class="lbl">Pelanggan</span><span class="val">${o.name}</span></div>
-        <div class="rowline"><span class="lbl">Layanan</span><span class="val">${serviceOf(o.serviceId).name} · ${o.weight} kg</span></div>
+        <div class="rowline"><span class="lbl">Layanan</span><span class="val">${serviceOf(o.serviceId).name} · ${o.awaitingWeight ? 'belum ditimbang' : o.weight+' kg'}</span></div>
         ${o.items?`<div class="rowline"><span class="lbl">Item</span><span class="val">${o.items}</span></div>`:''}
         ${o.pickup?`<div class="rowline"><span class="lbl">Antar-Jemput</span><span class="val">${o.address||'-'}</span></div>`:''}
         <div class="rowline"><span class="lbl">Pembayaran</span><span class="val">${o.isPaid ? 'Lunas · '+paymentLabel(o.paymentMethod) : 'Belum Lunas'}</span></div>
         <div class="rowline"><span class="lbl">Poin Diperoleh</span><span class="val">${o.isPaid ? o.pointsEarned : 0} poin</span></div>
-        <div class="total-line"><span>Total Tagihan</span><span>${rupiah(o.totalPrice)}</span></div>
+        <div class="total-line"><span>Total Tagihan</span><span>${o.awaitingWeight ? 'Menunggu penimbangan' : rupiah(o.totalPrice)}</span></div>
       </div>
       <div class="barcode"></div>
-      ${!o.isPaid ? `<div class="lock-note">🔒 Tagihan belum lunas — status &ldquo;Diserahkan/Diambil&rdquo; akan otomatis terkunci sistem hingga pembayaran dikonfirmasi kasir.</div>` : ''}
+      ${(!o.isPaid && !o.awaitingWeight) ? `<div class="lock-note">🔒 Tagihan belum lunas — status &ldquo;Diserahkan/Diambil&rdquo; akan otomatis terkunci sistem hingga pembayaran dikonfirmasi kasir.</div>` : ''}
     </div>
   </div>`;
 }
@@ -127,11 +128,9 @@ function renderPickup(){
         <div class="field"><label>No. HP (aktif WhatsApp)</label><input type="tel" name="phone" required placeholder="08xxxxxxxxxx"/></div>
       </div>
       <div class="field"><label>Alamat Penjemputan</label><input type="text" name="address" required placeholder="Alamat lengkap"/></div>
-      <div class="grid2">
-        <div class="field"><label>Perkiraan Berat (kg)</label><input type="number" name="weight" min="0.5" step="0.5" required/></div>
-        <div class="field"><label>Jenis Layanan</label><select name="serviceId">${SERVICES.map(s=>`<option value="${s.id}">${s.name} — ${s.desc}</option>`).join('')}</select></div>
-      </div>
-      <button class="btn" type="submit">Kirim Permintaan Jemput</button>
+      <div class="field"><label>Jenis Layanan</label><select name="serviceId">${SERVICES.map(s=>`<option value="${s.id}">${s.name} — ${s.desc} · ${rupiah(s.pricePerKg)}/kg</option>`).join('')}</select></div>
+      <div class="lock-note">⚖️ Berat cucian ditimbang oleh petugas saat penjemputan. Total tagihan akan muncul di halaman lacak setelah ditimbang, jadi Anda tidak perlu memperkirakan sendiri.</div>
+      <button class="btn" type="submit" style="margin-top:14px;">Kirim Permintaan Jemput</button>
     </form>
   </div>
   ${created}`;
@@ -143,8 +142,11 @@ function renderMiniReceipt(o){
   <div class="ticket">
     <div class="ticket-head"><span class="code mono">${o.code}</span><span class="status-pill">${o.status}</span></div>
     <div class="ticket-body">
-      <div class="rowline"><span class="lbl">Layanan</span><span class="val">${serviceOf(o.serviceId).name} · ${o.weight} kg</span></div>
-      <div class="total-line"><span>Estimasi Total</span><span>${rupiah(o.totalPrice)}</span></div>
+      <div class="rowline"><span class="lbl">Layanan</span><span class="val">${serviceOf(o.serviceId).name}${o.awaitingWeight?'':` · ${o.weight} kg`}</span></div>
+      ${o.awaitingWeight
+        ? `<div class="rowline"><span class="lbl">Tarif</span><span class="val">${rupiah(serviceOf(o.serviceId).pricePerKg)}/kg + jemput ${rupiah(PICKUP_FEE)}</span></div>
+           <div class="total-line"><span>Total Tagihan</span><span>Menunggu penimbangan</span></div>`
+        : `<div class="total-line"><span>Estimasi Total</span><span>${rupiah(o.totalPrice)}</span></div>`}
       <div class="lock-note" style="background:var(--brand-tint); color:var(--brand-deep);">Simpan kode <strong>${o.code}</strong> ini untuk melacak status jemputan Anda di tab &ldquo;Lacak Pesanan&rdquo;.</div>
     </div>
   </div>`;
@@ -203,8 +205,9 @@ function bind(){
     e.preventDefault();
     const fd = new FormData(formJemput);
     const res = await createOrder({
-      name: fd.get('name'), phone: fd.get('phone'), weight: fd.get('weight'),
-      serviceId: fd.get('serviceId'), items:'', pickup:true, address: fd.get('address'), isPaid:false,
+      name: fd.get('name'), phone: fd.get('phone'),
+      serviceId: fd.get('serviceId'), items:'', pickup:true, address: fd.get('address'),
+      isPaid:false, awaitingWeight:true,   // berat & harga dihitung kasir saat penjemputan
     });
     page.banner = res.ok
       ? { type:'ok', text:`Permintaan terkirim! Simpan kode ${res.order.code} untuk melacak status jemputan Anda.` }
